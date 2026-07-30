@@ -184,7 +184,7 @@ export function createAdminBalancesHandlers(deps: AdminBalancesDeps): {
           tokenCredits,
           quotaEffectif: tokenCredits,
           autoRefillEnabled: balance?.autoRefillEnabled ?? false,
-          refillAmount: balance?.refillAmount,
+          refillAmount: balance?.refillAmount ?? 0,
         };
       });
 
