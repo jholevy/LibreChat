@@ -466,6 +466,71 @@ export function createTransactionMethods(
     }
   }
 
+  /**
+   * Manually credits a user's balance by a fixed amount (admin action).
+   * Bypasses calculateTokenValue (which multiplies by defaultRate) by setting
+   * tokenValue === rawAmount and rate === 1 explicitly.
+   * Creates a Transaction doc for auditability then updates the balance. #quota #PImac
+   */
+  async function creditUserBalance({
+    user,
+    amount,
+    note,
+    context,
+  }: {
+    user: string;
+    amount: number;
+    note?: string;
+    context?: string;
+  }): Promise<{ transaction: ITransaction; balance: IBalance }> {
+    const Transaction = mongoose.models.Transaction;
+    const safeAmount = Math.max(0, amount);
+    const transaction = new Transaction({
+      user,
+      tokenType: 'credits',
+      rawAmount: safeAmount,
+      tokenValue: safeAmount,
+      rate: 1,
+      context: context ?? 'admin:manual',
+      valueKey: note,
+      model: 'admin-credit',
+    });
+    await transaction.save();
+
+    const balance = await updateBalance({ user, incrementValue: safeAmount });
+    return { transaction: transaction.toObject() as ITransaction, balance };
+  }
+
+  /**
+   * Applies a token-credits delta to multiple users (group quota inheritance).
+   * Uses updateBalance which clamps each balance at 0. #quota
+   * @param userIds - Array of user ObjectId strings
+   * @param delta - Signed delta (positive = credit, negative = debit)
+   */
+  async function applyQuotaDeltaToUsers(userIds: string[], delta: number): Promise<void> {
+    if (!userIds.length || delta === 0) {
+      return;
+    }
+    for (const userId of userIds) {
+      try {
+        await updateBalance({ user: userId, incrementValue: delta });
+      } catch (error) {
+        logger.error(`[applyQuotaDeltaToUsers] Failed delta ${delta} for user ${userId}:`, error);
+      }
+    }
+  }
+
+  /**
+   * Fetches balance records for multiple users in one query. #quota
+   */
+  async function findBalancesByUserIds(userIds: string[]): Promise<IBalance[]> {
+    if (!userIds.length) {
+      return [];
+    }
+    const Balance = mongoose.models.Balance as Model<IBalance>;
+    return Balance.find({ user: { $in: userIds } }).lean<IBalance[]>();
+  }
+
   return {
     updateBalance,
     bulkInsertTransactions,
@@ -477,6 +542,9 @@ export function createTransactionMethods(
     createTransaction,
     createAutoRefillTransaction,
     createStructuredTransaction,
+    creditUserBalance,
+    applyQuotaDeltaToUsers,
+    findBalancesByUserIds,
   };
 }
 

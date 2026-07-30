@@ -48,7 +48,9 @@ export interface AdminGroupsDeps {
   createGroup: (groupData: Partial<IGroup>, session?: ClientSession) => Promise<IGroup>;
   updateGroupById: (
     groupId: string | Types.ObjectId,
-    data: Partial<Pick<IGroup, 'name' | 'description' | 'email' | 'avatar'>>,
+    data: Partial<
+      Pick<IGroup, 'name' | 'description' | 'email' | 'avatar' | 'tokenQuota'>
+    >,
     session?: ClientSession,
   ) => Promise<IGroup | null>;
   deleteGroup: (
@@ -82,6 +84,13 @@ export interface AdminGroupsDeps {
     principalType: PrincipalType;
     principalId: string | Types.ObjectId;
   }) => Promise<DeleteResult>;
+  /** Resolves a group's memberIds to user ObjectId strings. #quota */
+  findGroupMemberUserIds: (
+    groupId: string | Types.ObjectId,
+    session?: ClientSession,
+  ) => Promise<string[]>;
+  /** Applies a signed token-credits delta to multiple users. #quota */
+  applyQuotaDeltaToUsers: (userIds: string[], delta: number) => Promise<void>;
 }
 
 export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
@@ -107,6 +116,8 @@ export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
     findUsers,
     deleteConfig,
     deleteAclEntries,
+    findGroupMemberUserIds,
+    applyQuotaDeltaToUsers,
   } = deps;
 
   async function listGroupsHandler(req: ServerRequest, res: Response) {
@@ -187,6 +198,15 @@ export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
           .status(400)
           .json({ error: `idOnTheSource must not exceed ${MAX_EXTERNAL_ID_LENGTH} characters` });
       }
+      let tokenQuota = 0;
+      if (body.tokenQuota !== undefined) {
+        if (typeof body.tokenQuota !== 'number' || isNaN(body.tokenQuota) || body.tokenQuota < 0) {
+          return res
+            .status(400)
+            .json({ error: 'tokenQuota must be a non-negative number' });
+        }
+        tokenQuota = Math.floor(body.tokenQuota);
+      }
 
       const rawIds = Array.isArray(body.memberIds) ? body.memberIds : [];
       if (rawIds.length > MAX_CREATE_MEMBER_IDS) {
@@ -220,8 +240,16 @@ export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
         avatar: body.avatar,
         source: body.source || 'local',
         memberIds,
+        tokenQuota,
         ...(body.idOnTheSource ? { idOnTheSource: body.idOnTheSource } : {}),
       });
+      // Propagate additive quota bonus to each resolved member. #quota #PImac
+      if (tokenQuota > 0 && memberIds.length > 0) {
+        const memberUserIds = await findGroupMemberUserIds(group._id);
+        if (memberUserIds.length > 0) {
+          await applyQuotaDeltaToUsers(memberUserIds, tokenQuota);
+        }
+      }
       return res.status(201).json({ group });
     } catch (error) {
       if ((error as ValidationError).name === 'ValidationError') {
@@ -267,7 +295,9 @@ export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
           .json({ error: `avatar must not exceed ${MAX_AVATAR_LENGTH} characters` });
       }
 
-      const updateData: Partial<Pick<IGroup, 'name' | 'description' | 'email' | 'avatar'>> = {};
+      const updateData: Partial<
+        Pick<IGroup, 'name' | 'description' | 'email' | 'avatar' | 'tokenQuota'>
+      > = {};
       if (body.name !== undefined) {
         updateData.name = body.name.trim();
       }
@@ -280,9 +310,36 @@ export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
       if (body.avatar !== undefined) {
         updateData.avatar = body.avatar;
       }
+      if (body.tokenQuota !== undefined) {
+        if (
+          typeof body.tokenQuota !== 'number' ||
+          isNaN(body.tokenQuota) ||
+          body.tokenQuota < 0
+        ) {
+          return res
+            .status(400)
+            .json({ error: 'tokenQuota must be a non-negative number' });
+        }
+        updateData.tokenQuota = Math.floor(body.tokenQuota);
+      }
 
       if (Object.keys(updateData).length === 0) {
         return res.status(400).json({ error: 'No valid fields to update' });
+      }
+
+      // Propagate additive quota delta to members when tokenQuota changes. #quota #PImac
+      if (updateData.tokenQuota !== undefined) {
+        const current = await findGroupById(id, { tokenQuota: 1 });
+        if (current) {
+          const oldQuota = current.tokenQuota ?? 0;
+          const delta = updateData.tokenQuota - oldQuota;
+          if (delta !== 0) {
+            const memberUserIds = await findGroupMemberUserIds(id);
+            if (memberUserIds.length > 0) {
+              await applyQuotaDeltaToUsers(memberUserIds, delta);
+            }
+          }
+        }
       }
 
       const group = await updateGroupById(id, updateData);
@@ -304,6 +361,14 @@ export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
       const { id } = req.params as GroupIdParams;
       if (!isValidObjectIdString(id)) {
         return res.status(400).json({ error: 'Invalid group ID format' });
+      }
+      // Reclaim additive quota from members before deletion. #quota #PImac
+      const existing = await findGroupById(id, { tokenQuota: 1, memberIds: 1 });
+      if (existing && (existing.tokenQuota ?? 0) > 0) {
+        const memberUserIds = await findGroupMemberUserIds(id);
+        if (memberUserIds.length > 0) {
+          await applyQuotaDeltaToUsers(memberUserIds, -(existing.tokenQuota ?? 0));
+        }
       }
       const deleted = await deleteGroup(id);
       if (!deleted) {
@@ -420,6 +485,10 @@ export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
       if (!group) {
         return res.status(404).json({ error: 'Group not found' });
       }
+      // Grant additive quota bonus to the newly added member. #quota #PImac
+      if ((group.tokenQuota ?? 0) > 0) {
+        await applyQuotaDeltaToUsers([userId], group.tokenQuota ?? 0);
+      }
       return res.status(200).json({ group });
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
@@ -455,6 +524,11 @@ export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
       const { id, userId } = req.params as GroupMemberParams;
       if (!isValidObjectIdString(id)) {
         return res.status(400).json({ error: 'Invalid group ID format' });
+      }
+      // Reclaim additive quota from the member before removal. #quota #PImac
+      const groupBeforeRemoval = await findGroupById(id, { tokenQuota: 1 });
+      if (groupBeforeRemoval && (groupBeforeRemoval.tokenQuota ?? 0) > 0) {
+        await applyQuotaDeltaToUsers([userId], -(groupBeforeRemoval.tokenQuota ?? 0));
       }
 
       const group = isValidObjectIdString(userId)

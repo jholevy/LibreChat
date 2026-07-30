@@ -240,6 +240,10 @@ const startServer = async () => {
   app.use('/api/admin/config', routes.adminConfig);
   app.use('/api/admin/grants', routes.adminGrants);
   app.use('/api/admin/groups', routes.adminGroups);
+  // Balance/quota routes mounted on /api/admin so sub-paths are
+  //   /balances, /users/:userId/balance, /users/:userId/balance/credit
+  // Must be mounted BEFORE adminUsers to win the /users/:userId/balance routes.
+  app.use('/api/admin', routes.adminBalances);
   app.use('/api/admin/roles', routes.adminRoles);
   app.use('/api/admin/skills', routes.adminSkills);
   app.use('/api/admin/users', routes.adminUsers);

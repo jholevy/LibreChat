@@ -9,6 +9,8 @@ export interface IGroup extends Document {
   avatar?: string;
   /** Array of member IDs (stores idOnTheSource values, not ObjectIds) */
   memberIds?: string[];
+  /** Token quota (additive bonus) granted to every group member's balance. #quota */
+  tokenQuota?: number;
   source: 'local' | 'entra';
   /** External ID (e.g., Entra ID) - required for non-local sources */
   idOnTheSource?: string;
@@ -23,6 +25,7 @@ export interface CreateGroupRequest {
   email?: string;
   avatar?: string;
   memberIds?: string[];
+  tokenQuota?: number;
   source: 'local' | 'entra';
   idOnTheSource?: string;
 }
@@ -33,6 +36,7 @@ export interface UpdateGroupRequest {
   email?: string;
   avatar?: string;
   memberIds?: string[];
+  tokenQuota?: number;
   source?: 'local' | 'entra' | 'ldap';
   idOnTheSource?: string;
 }

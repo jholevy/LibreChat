@@ -1,6 +1,7 @@
 export { createAdminConfigHandlers } from './config';
 export { createAdminGrantsHandlers } from './grants';
 export { createAdminGroupsHandlers } from './groups';
+export { createAdminBalancesHandlers } from './balances';
 export { createAdminRolesHandlers } from './roles';
 export { createAdminSkillsSyncAccess, createAdminSkillsSyncHandlers } from './skills';
 export { createAdminUsersHandlers } from './users';
@@ -8,6 +9,7 @@ export { createAdminAuditLogHandlers } from './auditLog';
 export type { AdminConfigDeps } from './config';
 export type { AdminGrantsDeps, GrantPrincipalType } from './grants';
 export type { AdminGroupsDeps } from './groups';
+export type { AdminBalancesDeps, AdminBalanceListItem, AdminBalanceList } from './balances';
 export type { AdminRolesDeps } from './roles';
 export type { AdminSkillSyncAccessDeps, AdminSkillSyncDeps } from './skills';
 export type { AdminUsersDeps } from './users';

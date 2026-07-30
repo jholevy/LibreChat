@@ -115,6 +115,14 @@ export function createUserGroupMethods(mongoose: typeof import('mongoose')): {
     memberId: string,
     session?: ClientSession,
   ) => Promise<IGroup | null>;
+  findGroupMemberUserIds: (
+    groupId: string | Types.ObjectId,
+    session?: ClientSession,
+  ) => Promise<string[]>;
+  findGroupsByMemberIdOnSources: (
+    idOnSources: string[],
+    session?: ClientSession,
+  ) => Promise<IGroup[]>;
 } {
   /**
    * Find a group by its ID
@@ -886,6 +894,59 @@ export function createUserGroupMethods(mongoose: typeof import('mongoose')): {
     ).lean<IGroup>();
   }
 
+  /**
+   * Resolves a group's memberIds (which store idOnTheSource values) to actual
+   * user ObjectId strings. Used for group quota delta propagation. #quota #PImac
+   * @param groupId - The group's ObjectId
+   * @param session - Optional MongoDB session
+   * @returns Array of user ObjectId strings
+   */
+  async function findGroupMemberUserIds(
+    groupId: string | Types.ObjectId,
+    session?: ClientSession,
+  ): Promise<string[]> {
+    const User = mongoose.models.User as Model<IUser>;
+    const group = await findGroupById(groupId, { memberIds: 1 }, session);
+    if (!group?.memberIds?.length) {
+      return [];
+    }
+    const memberIds = group.memberIds;
+    const validObjectIds = memberIds.filter((id) => mongoose.isValidObjectId(id));
+    const orClauses: FilterQuery<IUser>[] = [{ idOnTheSource: { $in: memberIds } }];
+    if (validObjectIds.length) {
+      orClauses.push({ _id: { $in: validObjectIds.map((id) => new Types.ObjectId(id)) } });
+    }
+    const userQuery = User.find({ $or: orClauses }, { _id: 1 });
+    if (session) {
+      userQuery.session(session);
+    }
+    const users = await userQuery.lean<Array<{ _id: Types.ObjectId }>>();
+    return users.map((u) => u._id.toString());
+  }
+
+  /**
+   * Fetches groups whose memberIds include any of the given idOnTheSource values,
+   * with name + tokenQuota + memberIds projection. Used for the balance list
+   * batch-join (show inherited quotas per user). #quota
+   */
+  async function findGroupsByMemberIdOnSources(
+    idOnSources: string[],
+    session?: ClientSession,
+  ): Promise<IGroup[]> {
+    const Group = mongoose.models.Group as Model<IGroup>;
+    if (!idOnSources.length) {
+      return [];
+    }
+    const query = Group.find(
+      { memberIds: { $in: idOnSources } },
+      { name: 1, tokenQuota: 1, memberIds: 1 },
+    );
+    if (session) {
+      query.session(session);
+    }
+    return await query.lean<IGroup[]>();
+  }
+
   return {
     findGroupById,
     findGroupByExternalId,
@@ -910,6 +971,8 @@ export function createUserGroupMethods(mongoose: typeof import('mongoose')): {
     countGroups,
     deleteGroup,
     removeMemberById,
+    findGroupMemberUserIds,
+    findGroupsByMemberIdOnSources,
   };
 }
 

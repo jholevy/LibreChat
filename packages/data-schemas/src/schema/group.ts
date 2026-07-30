@@ -27,6 +27,12 @@ const groupSchema: Schema<IGroup> = new Schema<IGroup>(
         required: false,
       },
     ],
+    /** Token quota (additive bonus) granted to every group member's balance. #quota #PImac */
+    tokenQuota: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     source: {
       type: String,
       enum: ['local', 'entra'],
